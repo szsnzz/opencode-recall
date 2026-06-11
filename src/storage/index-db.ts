@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { segment } from "./segment.ts";
+
 /**
  * Row in the memory_doc table. Mirrors the schema in DESIGN.md §3.4.
  */
@@ -48,15 +50,21 @@ function migrate(db: Database): void {
   db.exec(
     `CREATE INDEX IF NOT EXISTS memory_doc_scope_idx ON memory_doc(scope, scope_id);`,
   );
-  // Tokenizer aligned with MiMo Code (migration 20260521010000_memory_fts_v6):
-  // `unicode61 remove_diacritics 1`. unicode61 treats runs of CJK as a single
-  // token (no word segmentation), which is a known limitation shared with
-  // MiMo — recall relies on the OR-joined phrase query + BM25 + score floor,
-  // and on memory text usually being punctuated into short CJK runs. We do NOT
-  // use `porter` (English stemming) so behavior matches MiMo for portability.
+  // Tokenizer: `unicode61 remove_diacritics 1` (same family as MiMo Code's
+  // migration 20260521010000_memory_fts_v6). We deliberately do NOT use
+  // `porter`, keeping behavior aligned with MiMo for portability.
+  //
+  // Two columns:
+  //   - body   : the original, human-readable text. Used for snippet() output.
+  //   - search : the CJK-segmented text (see segment.ts). unicode61 treats a
+  //              run of CJK as ONE token, so substring search is impossible on
+  //              raw text. We index bigram-segmented text here and MATCH only
+  //              this column ({search} : (...)), which restores CJK substring
+  //              recall while leaving english/identifier search untouched.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
       body,
+      search,
       tokenize = 'unicode61 remove_diacritics 1'
     );
   `);
@@ -85,6 +93,7 @@ export function upsertDoc(
       .get(doc.path);
 
     const now = Date.now();
+    const search = segment(doc.body);
     if (existing) {
       db.query(
         `UPDATE memory_doc
@@ -92,9 +101,10 @@ export function upsertDoc(
          WHERE id = ?`,
       ).run(doc.scope, doc.scopeId, doc.type, doc.fingerprint, now, existing.id);
       db.query("DELETE FROM memory_fts WHERE rowid = ?").run(existing.id);
-      db.query("INSERT INTO memory_fts(rowid, body) VALUES (?, ?)").run(
+      db.query("INSERT INTO memory_fts(rowid, body, search) VALUES (?, ?, ?)").run(
         existing.id,
         doc.body,
+        search,
       );
     } else {
       const info = db
@@ -104,9 +114,10 @@ export function upsertDoc(
         )
         .run(doc.path, doc.scope, doc.scopeId, doc.type, doc.fingerprint, now);
       const id = Number(info.lastInsertRowid);
-      db.query("INSERT INTO memory_fts(rowid, body) VALUES (?, ?)").run(
+      db.query("INSERT INTO memory_fts(rowid, body, search) VALUES (?, ?, ?)").run(
         id,
         doc.body,
+        search,
       );
     }
   });

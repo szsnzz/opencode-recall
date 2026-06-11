@@ -117,4 +117,61 @@ describe("memorySearch", () => {
     expect(hits.length).toBe(1);
     expect(hits[0]!.score).toBe(1);
   });
+
+  // --- CJK substring recall (the regression fixed by bigram segmentation) ---
+
+  test("finds a CJK substring inside an unspaced run", async () => {
+    // Stored text has no spaces between CJK chars; "简洁" is a substring of
+    // "并且简洁". With raw unicode61 this returned 0; bigram segmentation fixes it.
+    await rememberFact(
+      { section: "rule", content: "提交信息要用中文，并且简洁" },
+      { store, projectId: PID },
+    );
+    const hits = await memorySearch(
+      { query: "简洁" },
+      { store, projectId: PID, sessionId: SID },
+    );
+    expect(hits.length).toBeGreaterThanOrEqual(1);
+    expect(hits[0]!.snippet).toContain("简洁");
+  });
+
+  test("finds a mid-run CJK substring", async () => {
+    await rememberFact(
+      { section: "durable_knowledge", content: "插件可加载并写入隔离目录" },
+      { store, projectId: PID },
+    );
+    const hits = await memorySearch(
+      { query: "写入" },
+      { store, projectId: PID, sessionId: SID },
+    );
+    expect(hits.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("snippet shows original un-segmented text", async () => {
+    await rememberFact(
+      { section: "rule", content: "数据库连接串要放到环境变量" },
+      { store, projectId: PID },
+    );
+    const hits = await memorySearch(
+      { query: "环境变量" },
+      { store, projectId: PID, sessionId: SID },
+    );
+    expect(hits.length).toBeGreaterThanOrEqual(1);
+    // No injected spaces between CJK chars in the displayed snippet.
+    expect(hits[0]!.snippet).toContain("环境变量");
+    expect(hits[0]!.snippet).not.toContain("环境 境变");
+  });
+
+  test("unrelated CJK query returns nothing", async () => {
+    await rememberFact(
+      { section: "rule", content: "提交信息要用中文" },
+      { store, projectId: PID },
+    );
+    const hits = await memorySearch(
+      { query: "数据库" },
+      { store, projectId: PID, sessionId: SID },
+    );
+    expect(hits.length).toBe(0);
+  });
+
 });
