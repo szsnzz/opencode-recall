@@ -260,9 +260,11 @@ memory_search: tool({
 
 `/dream` 和 `/distill` 命令。这是插件中**唯一**需要额外跑 LLM 的部分，且由用户显式触发，符合"零后台静默行为"原则。
 
+> **当前实现状态（v1，有意简化）**：收敛层先用一个最小框架跑一段时间，收集真实使用反馈后再决定是否加重。下面每节的"设计目标"是完整愿景，"当前实现"是这一版实际做的，差异均为**有意的成本/安全取舍**，不是遗漏。详见各节末的取舍说明。
+
 ### `/dream` — 记忆合并与晋升
 
-读历史会话（`session.list` + `session.messages`）+ 现有记忆文件，喂一次 `session.prompt`，让模型：
+**设计目标**：读历史会话（`session.list` + `session.messages`）+ 现有记忆文件，喂一次 `session.prompt`，让模型：
 
 - 把分散在各 checkpoint 的发现合并去重；
 - 把相对日期转绝对日期；
@@ -271,11 +273,23 @@ memory_search: tool({
 - 沿晋升链收敛：**会话发现（checkpoint §5）→ 项目记忆 → 全局记忆**；
 - 保持 MEMORY.md 紧凑（建议 < 200 行 / 10KB）。
 
+**当前实现（`src/consolidate.ts`）**：输入源**只取已浓缩的 checkpoint + 项目/全局 MEMORY**（最近 20 个 checkpoint），**不读原始 `session.messages`**。其余收敛逻辑（合并去重、绝对日期、grep 验证、晋升、紧凑）全部通过 prompt 交给模型。
+
+> **取舍：暂不读原始会话历史。** `session.messages` 会返回每条消息的完整 parts，**包含 tool 调用的输入输出**（`read`/`grep`/`bash` 的结果动辄数万 token）。把多个会话的全量轨迹塞进一个 prompt 既贵又容易超窗截断。而 checkpoint 本身就是"已经被判断为值得记"的浓缩产物，作为默认输入源**便宜且信号密度高**。
+> 代价：dream 只能收敛"已进入 checkpoint 的内容"，无法从原始对话里挖掘漏记的持久知识——晋升链的源头窄了一截。
+> 后续方向（待反馈再定）：把历史消息做成**可选的、带 token 预算上限的增强源**——用 `session.messages` 的 `limit` 限条数、用 `AssistantMessage.tokens` 累计设上限、剥离 ToolPart 大输出只留文本，默认关闭或低预算。
+
 ### `/distill` — 工作流沉淀
 
-回看历史，识别重复出现的手工工作流，把高置信度的建议沉淀成 opencode 的 skill / command / subagent。"没有重复就什么都不建"是合法结果。
+**设计目标**：回看历史，识别重复出现的手工工作流，把高置信度的建议沉淀成 opencode 的 skill / command / subagent。"没有重复就什么都不建"是合法结果。
 
-> 与 MiMo 的差异：MiMo 直接读全量轨迹库 `mimocode.db`；上游 opencode 没有等价的公开库，所以走 SDK 读历史消息。能力略弱但够用。两个命令可选支持"距上次运行超过 N 天才允许跑"的软提醒，但**不做自动定时**。
+**当前实现（`src/consolidate.ts`）**：喂记忆内容给模型，让它**口头给出**"可沉淀为 skill/command 的建议"（名称、触发时机、模板内容），**不自动写文件**。没有识别到重复模式时回答"暂无值得提炼的工作流"。
+
+> **取舍：只产出建议，不自动落地为可执行资产。** opencode SDK 的 `command` / agent 只有 `list`（读），没有 create/write —— "落地"只能靠往 `.opencode/commands/`、`.opencode/agent/`、`.opencode/skills/` 写文件。但让 LLM **自动生成并写入可执行资产**等于让它自动改项目配置，是高风险行为（文件名注入、覆盖用户已有资产、生成不可信的可执行 prompt）。第一版先停在"建议"阶段。
+> 后续方向（待反馈再定）：两段式落地——distill 产出**结构化建议草稿**写到 `_memory_data/suggestions/`（复用 `assertSafeId` 做文件名安全、不覆盖已有资产），由用户确认后再落地到 `.opencode/`。
+
+> 与 MiMo 的差异：MiMo 直接读全量轨迹库 `mimocode.db`；上游 opencode 没有等价的公开库，只能走 SDK 读历史消息（见上面 dream 的取舍）。两个命令支持"距上次运行超过 N 天才允许跑"的软提醒（`intervalDays` + `.dream_last_run`/`.distill_last_run` 时间戳，`0` 表示强制运行），但**不做自动定时**。
+
 
 ---
 
@@ -362,10 +376,10 @@ opencode-memory/
 
 ## 10. 里程碑
 
-1. **M1 — 能存能搜（最小闭环）**：存储层（paths + index-db + reconcile + fts-query）+ 检索层（memory_search）+ 写入工具 `remember_fact`。验证"agent 记一条、之后能搜到"。
-2. **M2 — 完整写入**：`save_checkpoint` + `note` + checkpoint/MEMORY 模板与段合并 + 命令 `/checkpoint` `/remember`。
-3. **M3 — 三层晋升**：全局记忆 + 写入时的项目/全局路由。
-4. **M4 — 收敛**：`/dream`（合并去重晋升）+ `/distill`（工作流沉淀）。
+1. **M1 — 能存能搜（最小闭环）** ✅：存储层（paths + index-db + reconcile + fts-query）+ 检索层（memory_search）+ 写入工具 `remember_fact`。验证"agent 记一条、之后能搜到"。
+2. **M2 — 完整写入** ✅：`save_checkpoint` + `note` + checkpoint/MEMORY 模板与段合并 + 命令 `/checkpoint` `/remember`。
+3. **M3 — 三层晋升** ✅：全局记忆 + 写入时的项目/全局路由。
+4. **M4 — 收敛** ✅（v1 简化版）：`/dream`（合并去重晋升）+ `/distill`（工作流沉淀）。当前为最小框架——dream 只读 checkpoint/MEMORY 不读原始会话历史，distill 只产出建议不自动落地。两处均为有意的成本/安全取舍，详见 §6。先跑一段时间收集反馈再决定是否加重。
 5. **M5 — 打磨**：配置项、可选的缓存友好注入兜底、`/dream` 软提醒、指标与日志。
 
 ---
