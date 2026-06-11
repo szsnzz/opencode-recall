@@ -1,32 +1,43 @@
 {
   "name": "opencode-memory",
   "version": "0.1.0",
-  "description": "Long-term memory plugin for opencode: explicit write + on-demand FTS5 search",
+  "description": "Long-term memory plugin for opencode: explicit write + on-demand FTS5 search, with three-tier (session/project/global) promotion",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "files": [
-    "src"
+    "dist",
+    "README.md",
+    "DESIGN.md",
+    "INSTALL.md"
   ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test \"test/*.test.ts\""
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "test": "node --experimental-strip-types --test \"test/*.test.ts\"",
+    "prepublishOnly": "npm run clean && npm run build"
   },
   "keywords": [
     "opencode",
+    "opencode-plugin",
     "plugin",
     "memory",
-    "fts5"
+    "fts5",
+    "sqlite"
   ],
   "license": "MIT",
-  "peerDependencies": {
+  "dependencies": {
     "@opencode-ai/plugin": "^1.17.0"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.17.3",
-    "@types/bun": "latest",
+    "@opencode-ai/sdk": "1.17.3",
+    "@types/node": "^22.5.0",
     "typescript": "^5.8.0"
   }
 }

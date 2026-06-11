@@ -1,0 +1,12 @@
+# Source & tests are not shipped — only compiled dist (see package.json "files").
+src/
+test/
+tsconfig.json
+tsconfig.build.json
+.npmignore
+
+# Local dev / scratch
+memtest/
+*.tmp
+*.log
+_memory_data/
