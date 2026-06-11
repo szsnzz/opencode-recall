@@ -48,10 +48,16 @@ function migrate(db: Database): void {
   db.exec(
     `CREATE INDEX IF NOT EXISTS memory_doc_scope_idx ON memory_doc(scope, scope_id);`,
   );
+  // Tokenizer aligned with MiMo Code (migration 20260521010000_memory_fts_v6):
+  // `unicode61 remove_diacritics 1`. unicode61 treats runs of CJK as a single
+  // token (no word segmentation), which is a known limitation shared with
+  // MiMo — recall relies on the OR-joined phrase query + BM25 + score floor,
+  // and on memory text usually being punctuated into short CJK runs. We do NOT
+  // use `porter` (English stemming) so behavior matches MiMo for portability.
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
       body,
-      tokenize = 'porter unicode61'
+      tokenize = 'unicode61 remove_diacritics 1'
     );
   `);
 }
