@@ -1,0 +1,358 @@
+# opencode-memory 架构设计
+
+一个为上游官方 opencode 设计的记忆插件。让 opencode 长出"自动记笔记 + 可被检索"的外挂长期记忆系统：记忆的产生由 agent 工具调用和用户命令**显式**发起，记忆的使用靠 agent **按需检索**。
+
+> 灵感来源：小米 MiMo Code（OpenCode 的 fork）的记忆系统。本项目不 fork 引擎，纯插件实现，因此刻意放弃了 MiMo 那套需要改核心的"上下文无损重建（换页）"，只保留插件层能稳定落地的部分。
+
+---
+
+## 1. 设计边界与原则
+
+### 已定决策
+
+| 维度 | 决策 | 理由 |
+|---|---|---|
+| 平台 | 上游官方 opencode，`@opencode-ai/sdk` + `@opencode-ai/plugin` | 可移植，不绑定 fork |
+| 记忆**读取** | 只做"方案 B"：agent 主动检索（`memory_search` 工具），**不注入上下文** | 对 prompt 缓存零影响、不占额度、不污染上下文 |
+| 记忆**写入** | **显式触发**：A（用户命令）+ B（agent 工具），二者并存 | 砍掉最不稳定的自动触发器；天然成为质量闸门，避免记忆冗杂 |
+| 写入工具粒度 | 拆成语义清晰的多个工具，而非一个万能工具 | 对模型更友好，更容易"用对" |
+| 分层 | 会话 / 项目 / 全局 三层全要，带晋升链 | 与 MiMo 一致，覆盖不同生命周期 |
+| 明确不做 | 上下文无损重建（换页）、token 阈值自动触发、后台静默 spawn | 引擎够不着 / 不稳定 / 信噪比差 |
+
+### 核心原则
+
+1. **零后台静默行为。** 插件的每一个动作都由 agent 的工具调用或用户的命令显式发起。没有定时器、没有 token 监听、没有暗中 spawn。行为完全可预测、可解释、成本可控。
+2. **记忆价值在密度，不在完整。** 显式触发即质量闸门——存下来的都是"被判断为值得记"的条目，而非机械快照。
+3. **写入器不跑后台 LLM。** 要记的内容由主 agent 在它自己的上下文里当场产出（它本就掌握全部信息），通过工具交给插件**直接落盘**。唯一需要额外跑 LLM 的地方是收敛命令（dream/distill）。
+4. **文件 + SQLite 解耦。** 模块间只通过"Markdown 文件 + FTS5 索引"通信，任何一块都能独立测试。
+
+---
+
+## 2. 总体架构
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                   opencode 主会话（用户）                   │
+└──────┬───────────────┬────────────────┬──────────────────┘
+       │ tool          │ tool           │ command
+       │ memory_search │ remember_fact  │ /checkpoint /remember
+       │               │ save_checkpoint│ /dream /distill
+       ▼               ▼                ▼
+┌─────────────┐ ┌──────────────┐ ┌──────────────────────────┐
+│ ④ 检索层     │ │ ② 写入层      │ │ ⑤ 收敛层                  │
+│ FTS5 + BM25 │ │ 校验 + 落盘   │ │ /dream  合并去重 + 晋升     │
+│ scope 过滤   │ │ 模板渲染      │ │ /distill 沉淀工作流为技能   │
+│ 相对分数地板 │ │ 三层路由      │ │ （唯一跑 LLM 的地方）       │
+└──────┬──────┘ └──────┬───────┘ └───────────┬──────────────┘
+       │ 读            │ 写                    │ 读历史+写记忆
+       ▼               ▼                       ▼
+┌──────────────────────────────────────────────────────────┐
+│ ③ 存储层                                                   │
+│  - Markdown 文件（global / projects / sessions 三层）       │
+│  - SQLite FTS5 索引（bun:sqlite，插件自管，不碰 opencode 库）│
+│  - reconcile 增量扫盘同步                                   │
+└──────────────────────────────────────────────────────────┘
+```
+
+四个模块：**存储、写入、检索、收敛**。相比初版，**触发器模块已完全删除**，写入层也从"后台 spawn 子会话 + 小模型总结"简化为"工具 execute 体里直接落盘"。
+
+---
+
+## 3. 存储层 ③
+
+### 3.1 文件布局（三层）
+
+```
+<memoryRoot>/
+├── global/MEMORY.md                  # 全局：跨项目用户偏好/习惯（最稳定）
+├── projects/<projectId>/MEMORY.md    # 项目：跨会话长期知识
+└── sessions/<sessionId>/
+    ├── checkpoint.md                 # 会话：当前状态（分段模板）
+    └── notes.md                      # 会话：自由草稿（可选）
+```
+
+- `<memoryRoot>` 默认 `~/.config/opencode/memory/`（与 opencode 配置同根，原生感强）。可配置为独立目录以便隔离/卸载。
+- `projectId` = 项目根绝对路径的 `sha256` 取前 12 位（路径从 `client.project.current()` / 插件 `directory` 取）。**同一仓库的所有会话共享同一份项目 MEMORY.md** —— 这是"关机不忘事"的来源。
+- `sessionId` 由插件 hook 的 `input.sessionID` 提供。
+
+### 3.2 checkpoint.md 模板（分段，带 token 预算）
+
+借鉴 MiMo 的结构，精简为更适合显式写入的若干段。每段有软预算，写入时超限截断：
+
+| 段 | 内容 | 预算(tok) |
+|---|---|---|
+| §1 当前意图 | 用户最近的明确诉求（尽量原话） | 500 |
+| §2 下一步 | 单个最具体的下一步动作 | 800 |
+| §3 当前工作 | 正在做什么，涉及哪些文件/代码位置 | 2000 |
+| §4 涉及文件 | 活跃读写的文件 + 一句话用途 | 1500 |
+| §5 发现的知识 | 本会话学到、可能对未来有用的事实（晋升候选） | 2000 |
+| §6 错误与修复 | 踩的坑及解决方式，新的在前 | 1500 |
+| §7 设计决策 | 讨论得出的决定 + 理由（"为什么这么做"） | 2000 |
+| §8 开放问题 | 未决事项、杂项 | 800 |
+
+### 3.3 MEMORY.md 模板（项目级 / 全局级）
+
+| 段 | 内容 |
+|---|---|
+| Project context | 这项目是干嘛的、目标 |
+| Rules | 用户明确定下的硬性约束 |
+| Architecture decisions | 重大设计选择 + 绝对日期 + 理由 |
+| Discovered durable knowledge | 跨会话持久的事实（从 checkpoint §5 晋升而来） |
+| Patterns / Gotchas | 重复出现的问题与解法、易踩的坑 |
+
+全局 MEMORY.md 用 `# Global memory` 标题，只放跨项目通用的偏好。
+
+### 3.4 SQLite FTS5 索引（插件自建）
+
+用 `bun:sqlite`，独立文件 `<memoryRoot>/index.db`，**绝不触碰 opencode 自己的数据库**：
+
+```sql
+CREATE TABLE memory_doc (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  path        TEXT UNIQUE NOT NULL,   -- 文件绝对路径
+  scope       TEXT NOT NULL,          -- 'global' | 'projects' | 'sessions'
+  scope_id    TEXT NOT NULL DEFAULT '',
+  type        TEXT NOT NULL,          -- 'memory' | 'checkpoint' | 'notes'
+  fingerprint TEXT NOT NULL,          -- 内容 sha256，用于增量索引
+  indexed_at  INTEGER NOT NULL
+);
+CREATE INDEX memory_doc_scope_idx ON memory_doc(scope, scope_id);
+
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+  body,
+  tokenize = 'porter unicode61'
+);
+-- memory_fts.rowid 与 memory_doc.id 对齐
+```
+
+检索 = `bm25(memory_fts)` 排序 + `snippet()` 出高亮片段。**不用 embedding/向量**：延迟低、零外部依赖、可解释。
+
+### 3.5 reconcile（增量同步）
+
+检索前惰性执行：扫盘比对每个文件的 `fingerprint`，仅对新增/变更文件重建 FTS 行，删除已不存在的文件行。覆盖两种场景：
+
+- 写入器落盘后立即可被搜到；
+- 用户手动编辑过记忆文件也能被纳入索引。
+
+### 3.6 FTS 查询构建
+
+用户 query 需做 token 化以免 FTS5 MATCH 解析器崩溃：标点变分隔符、每个字母数字串短语化（`"..."`）后 OR 连接。OR 连接的副作用（只命中常见词的文档也匹配）由检索层的"相对分数地板"处理（见 §5）。
+
+---
+
+## 4. 写入层 ②（显式触发，A + B）
+
+写入层是**纯同步落盘**，不跑后台 LLM。要写的结构化内容由调用方（agent 或命令）提供，插件负责校验、模板渲染、三层路由、原子写、触发 reconcile。
+
+### 4.1 写入闸门 B：agent 工具（拆成语义清晰的多个）
+
+提供三个工具，让 agent 在不同场景按语义选择，比单个万能工具更容易"用对"：
+
+```ts
+// 工具 1：记一条持久事实到【项目记忆】
+remember_fact: tool({
+  description:
+    "把一条值得跨会话长期记住的事实/规则/决策写入项目记忆。" +
+    "在确立了一个架构决策、用户定了一条规则、发现了一个持久的项目事实时调用。" +
+    "不要用于临时的、只在本次对话有意义的内容（那些用 save_checkpoint）。",
+  args: {
+    section: tool.schema.enum([
+      "rule", "architecture_decision", "durable_knowledge", "pattern", "gotcha",
+    ]),
+    content: tool.schema.string().describe("1-3 行，简洁高信号"),
+    global: tool.schema.boolean().optional()
+      .describe("true 表示这条跨项目通用，写入全局记忆而非项目记忆"),
+  },
+  // execute: 合并进对应 MEMORY.md 的对应段（去重：相似已存在则跳过/更新）
+})
+
+// 工具 2：存当前【会话状态】到 checkpoint
+save_checkpoint: tool({
+  description:
+    "把当前会话的工作状态存档到会话检查点。" +
+    "在完成一个阶段性任务、即将切换到另一块工作、或对话信息量已经很大时调用。" +
+    "用于保存'现在进行到哪、下一步是什么、涉及哪些文件'这类会话级状态。",
+  args: {
+    intent: tool.schema.string().optional(),        // §1
+    next_action: tool.schema.string().optional(),   // §2
+    current_work: tool.schema.string().optional(),  // §3
+    files: tool.schema.array(tool.schema.string()).optional(), // §4
+    discovered: tool.schema.string().optional(),    // §5
+    errors_fixes: tool.schema.string().optional(),  // §6
+    decisions: tool.schema.string().optional(),     // §7
+    open_questions: tool.schema.string().optional(),// §8
+  },
+  // execute: 渲染/合并进 sessions/<sid>/checkpoint.md，已有段做增量更新
+})
+
+// 工具 3：追加一条自由草稿到会话 notes（最轻量）
+note: tool({
+  description: "追加一条简短笔记到会话草稿本，用于零散观察、待办、临时备忘。",
+  args: { content: tool.schema.string() },
+  // execute: append 到 sessions/<sid>/notes.md，带时间戳
+})
+```
+
+工具描述刻意写得"有引导性"——明确告诉模型**何时**该调、以及三者的分工边界。这是写入闸门 B 成败的关键。
+
+### 4.2 写入闸门 A：用户命令
+
+作为强制补刀和"立即存档"入口（覆盖 agent 忘记自觉记录的情况）：
+
+| 命令 | 行为 |
+|---|---|
+| `/checkpoint` | 让当前 agent 立即生成一份完整 checkpoint（内部即引导 agent 调 `save_checkpoint`） |
+| `/remember <文本>` | 把一条事实快速写入项目记忆的 `durable_knowledge` 段 |
+
+命令通过 opencode 的 command 机制实现（`.opencode/command/` 或插件注册）。`/checkpoint` 本质是一段引导 prompt + `save_checkpoint` 工具的组合。
+
+### 4.3 落盘细节
+
+- **结构化输入直接落盘**：无需让模型碰文件路径，从源头避免 MiMo 那类"模型臆造路径"问题，也无权限风险。
+- **去重合并**：写 MEMORY.md 时按段合并，相似条目更新而非追加（简单文本相似度即可，避免库膨胀）。
+- **原子写**：临时文件 + `rename`，避免并发会话写坏同一项目 MEMORY.md。
+- **写后 reconcile**：更新 FTS 索引，保证 `memory_search` 立刻能搜到。
+
+---
+
+## 5. 检索层 ④（方案 B 的全部）
+
+注册一个工具，是记忆"被使用"的唯一通道：
+
+```ts
+memory_search: tool({
+  description:
+    "搜索跨会话的项目记忆与历史检查点。" +
+    "当你需要回忆早先的决策、踩过的坑、用户定过的规则、或本项目的背景知识时使用。" +
+    "返回的是已存档的高信号记忆片段，不是源码——查源码用 grep。",
+  args: {
+    query: tool.schema.string(),
+    scope: tool.schema.enum(["all", "project", "session", "global"]).optional(),
+    limit: tool.schema.number().optional(),
+  },
+  execute: async (args) => { /* reconcile → FTS5 MATCH → BM25 → 地板过滤 → 片段 */ },
+})
+```
+
+- **默认 scope**：`项目 + 全局 + 当前会话`（SQL 过滤，绝不泄漏其他会话/项目的记忆）。
+- **相对分数地板**：保留分数 ≥ 最高分 × `scoreFloor`（默认 0.15）的结果，但第一名永远保留。过滤只命中常见词的噪音。相对而非绝对，因为小语料下 BM25 分数会整体塌缩。
+- **返回**：每条含 `path`（来源）+ `snippet`（高亮片段）+ `score`。
+- **刻意不注入上下文**：不挂 system prompt、不挂 user message。代价是依赖模型自觉调用——这是"只做方案 B"的固有取舍，已接受。`memory_search` 的描述质量直接决定召回是否被用上。
+
+---
+
+## 6. 收敛层 ⑤
+
+`/dream` 和 `/distill` 命令。这是插件中**唯一**需要额外跑 LLM 的部分，且由用户显式触发，符合"零后台静默行为"原则。
+
+### `/dream` — 记忆合并与晋升
+
+读历史会话（`session.list` + `session.messages`）+ 现有记忆文件，喂一次 `session.prompt`，让模型：
+
+- 把分散在各 checkpoint 的发现合并去重；
+- 把相对日期转绝对日期；
+- 删除被推翻的过时条目；
+- 验证提到的文件路径/函数名是否还存在；
+- 沿晋升链收敛：**会话发现（checkpoint §5）→ 项目记忆 → 全局记忆**；
+- 保持 MEMORY.md 紧凑（建议 < 200 行 / 10KB）。
+
+### `/distill` — 工作流沉淀
+
+回看历史，识别重复出现的手工工作流，把高置信度的建议沉淀成 opencode 的 skill / command / subagent。"没有重复就什么都不建"是合法结果。
+
+> 与 MiMo 的差异：MiMo 直接读全量轨迹库 `mimocode.db`；上游 opencode 没有等价的公开库，所以走 SDK 读历史消息。能力略弱但够用。两个命令可选支持"距上次运行超过 N 天才允许跑"的软提醒，但**不做自动定时**。
+
+---
+
+## 7. 配置（opencode.json）
+
+插件通过 `client.config.get()` 读取自定义 `memory` 段：
+
+```jsonc
+{
+  "plugin": ["opencode-memory"],
+  "memory": {
+    "enabled": true,
+    "root": "~/.config/opencode/memory",   // 记忆根目录，可改为独立目录
+    "search": {
+      "scoreFloor": 0.15,
+      "defaultScope": "project+global+session",
+      "limit": 10
+    },
+    "dream":   { "intervalDays": 7  },       // 仅用于软提醒，不自动跑
+    "distill": { "intervalDays": 30 }
+  }
+}
+```
+
+注意：**没有任何 `thresholds` / `writeOnIdle` / `auto` 配置**——因为不存在自动触发。
+
+---
+
+## 8. 代码结构
+
+```
+opencode-memory/
+├── DESIGN.md
+├── README.md
+├── package.json
+├── tsconfig.json
+├── src/
+│   ├── index.ts            # Plugin 入口：装配 tools + commands + config
+│   ├── config.ts           # 配置解析 + 默认值
+│   ├── storage/
+│   │   ├── paths.ts        # 三层路径解析/构建（防路径穿越）
+│   │   ├── index-db.ts     # bun:sqlite + FTS5 schema 初始化
+│   │   ├── reconcile.ts    # 增量索引（fingerprint 比对）
+│   │   ├── fts-query.ts    # 查询 token 化
+│   │   └── templates.ts    # checkpoint / MEMORY 模板 + 段预算
+│   ├── write.ts            # ② remember_fact / save_checkpoint / note 的 execute
+│   ├── search.ts           # ④ memory_search 工具 + BM25 + scope 过滤 + 地板
+│   ├── commands.ts         # A：/checkpoint /remember 注册
+│   └── consolidate.ts      # ⑤ /dream /distill 编排
+└── test/
+    ├── paths.test.ts       # 路径解析 / 穿越防护
+    ├── fts-query.test.ts   # 特殊字符不崩、token 化正确
+    ├── reconcile.test.ts   # 增量索引 / 删除清理
+    ├── search.test.ts      # BM25 排序 / 地板过滤 / scope 隔离
+    └── write.test.ts       # 段合并去重 / 原子写 / 模板渲染
+```
+
+---
+
+## 9. 风险与取舍
+
+| 风险 | 应对 |
+|---|---|
+| 模型不主动调 `memory_search`（方案 B 死穴） | 工具描述强引导；后续可加**可选**的"轻量注入"开关（项目记忆挂 system 前缀，缓存友好）作为兜底——但默认关闭，保持纯方案 B |
+| 模型不主动调写入工具（闸门 B 漏记） | 工具描述明确"何时调用"；用户命令（闸门 A）兜底强制存档 |
+| MEMORY.md 随时间膨胀 | 写入时段内去重合并；`/dream` 定期收敛压缩；显式触发本身已大幅减少噪音 |
+| 多会话并发写同一项目 MEMORY.md | 原子写（临时文件 + rename）；`/dream` 串行化 |
+| FTS5 query 特殊字符崩解析器 | `fts-query.ts` 统一 token 化 + 短语化 |
+| `bun:sqlite` 依赖 | opencode 插件运行在 Bun 上，原生可用，无需额外安装 |
+| 记忆泄漏到无关会话/项目 | 检索 SQL 强制 scope 过滤；路径构建做穿越防护 |
+
+---
+
+## 10. 里程碑
+
+1. **M1 — 能存能搜（最小闭环）**：存储层（paths + index-db + reconcile + fts-query）+ 检索层（memory_search）+ 写入工具 `remember_fact`。验证"agent 记一条、之后能搜到"。
+2. **M2 — 完整写入**：`save_checkpoint` + `note` + checkpoint/MEMORY 模板与段合并 + 命令 `/checkpoint` `/remember`。
+3. **M3 — 三层晋升**：全局记忆 + 写入时的项目/全局路由。
+4. **M4 — 收敛**：`/dream`（合并去重晋升）+ `/distill`（工作流沉淀）。
+5. **M5 — 打磨**：配置项、可选的缓存友好注入兜底、`/dream` 软提醒、指标与日志。
+
+---
+
+## 附：与 MiMo Code 的能力对照
+
+| 能力 | MiMo（fork 引擎） | 本插件 | 说明 |
+|---|---|---|---|
+| 三层记忆 + 晋升链 | ✅ | ✅ | 完整保留 |
+| FTS5 + BM25 检索 | ✅ | ✅ | 完整保留 |
+| agent 按需检索 | ✅ | ✅ | 完整保留 |
+| 记忆写入 | 后台 subagent 自动写 | 显式工具 + 命令 | **取舍**：换稳定性与信噪比 |
+| token 阈值自动触发 | ✅ | ❌ | 主动放弃（最不稳定一环） |
+| 上下文无损重建（换页） | ✅ | ❌ | 引擎够不着，必须 fork |
+| dream / distill | ✅ 自动定时 | ✅ 命令触发 | 不做自动定时 |
+| 写入时跑后台 LLM | ✅ | ❌（仅 dream/distill 跑） | 简化：内容由主 agent 当场产出 |
