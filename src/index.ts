@@ -67,7 +67,7 @@ export function pickProjectRoot(
 }
 
 /**
- * opencode-memory — M1 + M2.
+ * opencode-recall — long-term memory plugin.
  *
  * M1 (minimal loop): remember_fact + memory_search.
  * M2 (full write):   save_checkpoint + note tools, checkpoint template with

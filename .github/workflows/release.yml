@@ -1,0 +1,58 @@
+name: release
+
+# Build the plugin and publish the packed tarball to a GitHub Release
+# whenever a version tag (v*) is pushed.
+#
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# The resulting asset (opencode-recall-<version>.tgz) is what users reference
+# in their opencode.json "plugin" array via the release download URL.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack tarball
+        id: pack
+        run: |
+          FILE=$(npm pack | tail -n1)
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "Packed: $FILE"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "${{ steps.pack.outputs.file }}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

@@ -1,4 +1,7 @@
-# 安装与踩坑（opencode-memory）
+# 安装与踩坑（opencode-recall）
+
+> **普通用户请看 [README.md](./README.md) 的"安装"一节**（从 GitHub Release tarball 一行装好）。
+> 本文记录的是**本地开发/联调**的装法，以及调试时踩出来的坑与排查方法。
 
 把本插件装进一个 opencode 项目的完整步骤，以及联调时踩出来的坑与排查方法。
 架构设计见 [`DESIGN.md`](./DESIGN.md)；本文只讲“怎么装、为什么这么装、出问题怎么查”。

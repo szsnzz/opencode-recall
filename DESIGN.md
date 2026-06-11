@@ -1,4 +1,4 @@
-# opencode-memory 架构设计
+# opencode-recall 架构设计
 
 一个为上游官方 opencode 设计的记忆插件。让 opencode 长出"自动记笔记 + 可被检索"的外挂长期记忆系统：记忆的产生由 agent 工具调用和用户命令**显式**发起，记忆的使用靠 agent **按需检索**。
 
@@ -334,7 +334,7 @@ memory_search: tool({
 ## 8. 代码结构
 
 ```
-opencode-memory/
+opencode-recall/
 ├── DESIGN.md
 ├── README.md
 ├── package.json

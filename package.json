@@ -1,5 +1,5 @@
 {
-  "name": "opencode-memory",
+  "name": "opencode-recall",
   "version": "0.1.0",
   "description": "Long-term memory plugin for opencode: explicit write + on-demand FTS5 search, with three-tier (session/project/global) promotion",
   "type": "module",

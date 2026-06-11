@@ -1,4 +1,4 @@
-# opencode-memory
+# opencode-recall
 
 opencode 的长期记忆插件：**显式写入** + **按需 FTS5 检索**，三层（会话 / 项目 / 全局）记忆带晋升链。
 
@@ -13,16 +13,18 @@ opencode 的长期记忆插件：**显式写入** + **按需 FTS5 检索**，三
 
 ## 安装
 
-在你的项目（或全局）`opencode.json` 的 `plugin` 字段加上本插件：
+从 [Releases](https://github.com/szsnzz/opencode-recall/releases) 下载页拿到最新版本的 tarball 直链，填进项目（或全局）`opencode.json` 的 `plugin` 字段：
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["opencode-memory"]
+  "plugin": ["https://github.com/szsnzz/opencode-recall/releases/download/v0.1.0/opencode-recall-0.1.0.tgz"]
 }
 ```
 
-opencode 启动时会自动安装插件及其依赖（缓存在 `~/.cache/opencode/node_modules/`）。无需手动建 `package.json` 或桥接文件。
+opencode 启动时会自动下载、安装插件及其依赖（缓存在 `~/.cache/opencode/node_modules/`）。无需手动建 `package.json` 或桥接文件。
+
+> 升级到新版本时，把 url 里的版本号换成新的 tag 即可。
 
 ## 配置（可选）
 
