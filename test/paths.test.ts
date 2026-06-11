@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/bun-test-shim.ts";
 import { resolve, sep } from "node:path";
 
 import { MemoryPaths, projectIdFromPath } from "../src/storage/paths.ts";

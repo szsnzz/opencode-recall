@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "./helpers/bun-test-shim.ts";
 
 import { buildMatchQuery, tokenize } from "../src/storage/fts-query.ts";
 import { segment } from "../src/storage/segment.ts";
