@@ -93,12 +93,39 @@ node cli.mjs <子命令> --project <项目根> [其它参数]
 
 > **收敛 / 提炼**：原 `/dream`、`/distill` 改为 `dump` + agent 端处理——CLI 把记忆全文交给 agent，由 agent 合并去重、晋升持久知识、或识别可沉淀的工作流。这是有意的成本/安全取舍，见 DESIGN.md §6。
 
-## 记忆存储布局
+## 记忆模型：两个独立维度
+
+理解 opencode-recall 的关键是分清**两个互不相干的维度**——很多困惑来自把它们混在一起。
+
+### 维度一：记忆的层级（scope）
+
+记忆分三层，决定**谁能检索到它**：
+
+| 层级 | 怎么写入 | 谁能检索到 | 典型用途 |
+|---|---|---|---|
+| **global（全局）** | `remember --global` | **所有项目** | 跨项目通用的规则/偏好，如提交信息规范、个人编码习惯 |
+| **project（项目）** | `remember`（默认，不加 `--global`） | **仅同一项目** | 该项目的架构决策、踩过的坑、持久知识 |
+| **session（会话）** | `checkpoint` / `note` | **仅当前会话**（检索默认带上） | 当前会话的工作状态、零散备忘 |
+
+项目身份由**项目根绝对路径的 sha256 哈希前 12 位**（`projectId`）决定：同一个项目路径 → 同一个 id → 共享同一份 `projects/<projectId>/MEMORY.md`。这就是为什么 `remember`（默认）写出来的东西落在 `projects/<哈希>/` 下——它是 **project 级**，按项目自动隔离，与"记忆库放哪"无关。
+
+> 检索默认 `scope=all`，会同时覆盖 全局 + 当前项目 + 当前会话，但**绝不**泄漏其它项目或其它会话的记忆。
+
+### 维度二：记忆库的物理位置（root）
+
+`root` 配置决定上述三层结构**整体存在磁盘的哪里**：
+
+- **默认共享根**（不配 `memory.json`）：所有项目的记忆都汇到 `~/.config/opencode/memory/`，靠 `projects/<projectId>/` 哈希子目录互不干扰。统一管理、跨项目检索方便。
+- **项目内独立根**（配 `{"root": "./_memory_data"}`）：记忆物理上待在项目目录里，可随 git 走、随项目迁移、彻底物理隔离。
+
+两个维度正交：无论 `root` 放哪，内部永远是 global / projects / sessions 三层结构。
+
+### 磁盘布局
 
 ```
-<root>/
-├── global/MEMORY.md                  # 全局：跨项目偏好/规则
-├── projects/<projectId>/MEMORY.md    # 项目：跨会话长期知识
+<root>/                               # 默认 ~/.config/opencode/memory，或项目内 ./_memory_data
+├── global/MEMORY.md                  # 全局：跨项目偏好/规则（需 --global 写入）
+├── projects/<projectId>/MEMORY.md    # 项目：跨会话长期知识（projectId = 项目路径哈希）
 ├── sessions/<sessionId>/
 │   ├── checkpoint.md                 # 会话：当前状态
 │   └── notes.md                      # 会话：草稿笔记
