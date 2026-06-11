@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Database } from "./storage/sqlite.ts";
 
 import type { MemoryConfig } from "./config.ts";
 import { openIndex } from "./storage/index-db.ts";

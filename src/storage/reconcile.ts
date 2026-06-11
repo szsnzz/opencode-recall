@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Database } from "./sqlite.ts";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { glob } from "node:fs/promises";

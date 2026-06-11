@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { Database } from "./storage/sqlite.ts";
 
 import { buildMatchQuery } from "./storage/fts-query.ts";
 import { reconcile } from "./storage/reconcile.ts";

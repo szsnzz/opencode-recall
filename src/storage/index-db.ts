@@ -1,7 +1,7 @@
-import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { Database } from "./sqlite.ts";
 import { segment } from "./segment.ts";
 
 /**
@@ -28,7 +28,7 @@ export function openIndex(dbPath: string): Database {
   if (dbPath !== ":memory:") {
     mkdirSync(dirname(dbPath), { recursive: true });
   }
-  const db = new Database(dbPath, { create: true });
+  const db = new Database(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   migrate(db);
