@@ -1,4 +1,11 @@
 import { sectionHeading, type MemorySection } from "./templates.ts";
+import {
+  CHECKPOINT_SECTIONS,
+  checkpointDef,
+  checkpointTitle,
+  truncateToBudget,
+  type CheckpointField,
+} from "./templates.ts";
 
 /**
  * Lightweight section-aware model of a MEMORY.md document.
@@ -151,3 +158,173 @@ export function serializeMemory(
   // Single trailing newline.
   return out.join("\n").replace(/\n+$/, "\n");
 }
+
+// ---------------------------------------------------------------------------
+// Checkpoint document model (session-level). See DESIGN.md §3.2.
+//
+// Unlike MEMORY.md, a checkpoint has a fixed set of sections keyed by heading.
+// Each section is either a free-text block or a bullet list ("涉及文件"). On
+// update, text blocks are replaced with the newest content; list sections get
+// new items deduped and appended. Every section is clamped to its token budget.
+// ---------------------------------------------------------------------------
+
+const HEADING_BY_FIELD: Record<CheckpointField, string> = Object.fromEntries(
+  CHECKPOINT_SECTIONS.map((s) => [s.key, s.heading]),
+) as Record<CheckpointField, string>;
+
+const FIELD_BY_HEADING: Record<string, CheckpointField> = Object.fromEntries(
+  CHECKPOINT_SECTIONS.map((s) => [s.heading, s.key]),
+);
+
+export interface CheckpointUpdate {
+  intent?: string;
+  next_action?: string;
+  current_work?: string;
+  files?: string[];
+  discovered?: string;
+  errors_fixes?: string;
+  decisions?: string;
+  open_questions?: string;
+}
+
+/**
+ * Parsed checkpoint: per-field content. Text fields hold a single string; the
+ * `files` list field holds an array of bullet items.
+ */
+export interface ParsedCheckpoint {
+  text: Map<CheckpointField, string>;
+  files: string[];
+}
+
+export function parseCheckpoint(content: string): ParsedCheckpoint {
+  const text = new Map<CheckpointField, string>();
+  let files: string[] = [];
+  if (!content) return { text, files };
+
+  const lines = content.split(/\r?\n/);
+  let currentField: CheckpointField | undefined;
+  let buffer: string[] = [];
+
+  const flush = () => {
+    if (currentField === undefined) return;
+    if (currentField === "files") {
+      // list section handled inline; nothing buffered as text
+    } else {
+      const body = buffer.join("\n").trim();
+      if (body.length > 0) text.set(currentField, body);
+    }
+    buffer = [];
+  };
+
+  for (const line of lines) {
+    const h2 = line.match(/^##\s+(.+?)\s*$/);
+    if (h2) {
+      flush();
+      const field = FIELD_BY_HEADING[h2[1]!];
+      currentField = field;
+      continue;
+    }
+    if (currentField === undefined) continue;
+    if (line.match(/^#\s+/)) continue; // title line
+    if (currentField === "files") {
+      const bullet = line.match(/^[-*]\s+(.*)$/);
+      if (bullet) {
+        const t = bullet[1]!.trim();
+        if (t) files.push(t);
+      }
+    } else {
+      buffer.push(line);
+    }
+  }
+  flush();
+
+  return { text, files };
+}
+
+export interface CheckpointMergeResult {
+  /** Fields that were written/changed by this update. */
+  changed: CheckpointField[];
+}
+
+/**
+ * Apply an update onto a parsed checkpoint. Text fields replace prior content;
+ * the files list dedupes and appends. Each field is truncated to its budget.
+ */
+export function mergeCheckpoint(
+  doc: ParsedCheckpoint,
+  update: CheckpointUpdate,
+): CheckpointMergeResult {
+  const changed: CheckpointField[] = [];
+
+  const setText = (field: CheckpointField, value: string | undefined) => {
+    if (value === undefined) return;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return;
+    const budget = checkpointDef(field).tokenBudget;
+    doc.text.set(field, truncateToBudget(trimmed, budget));
+    changed.push(field);
+  };
+
+  setText("intent", update.intent);
+  setText("next_action", update.next_action);
+  setText("current_work", update.current_work);
+  setText("discovered", update.discovered);
+  setText("errors_fixes", update.errors_fixes);
+  setText("decisions", update.decisions);
+  setText("open_questions", update.open_questions);
+
+  if (update.files && update.files.length > 0) {
+    const seen = new Set(doc.files.map((f) => normalizeForCompare(f)));
+    let added = false;
+    for (const raw of update.files) {
+      const f = raw.trim();
+      if (!f) continue;
+      const norm = normalizeForCompare(f);
+      if (seen.has(norm)) continue;
+      seen.add(norm);
+      doc.files.push(f);
+      added = true;
+    }
+    if (added) {
+      // Clamp the whole list to its budget by dropping oldest entries.
+      const budget = checkpointDef("files").tokenBudget;
+      while (
+        doc.files.length > 1 &&
+        approxBudgetOfList(doc.files) > budget
+      ) {
+        doc.files.shift();
+      }
+      changed.push("files");
+    }
+  }
+
+  return { changed };
+}
+
+function approxBudgetOfList(items: string[]): number {
+  // Reuse the same heuristic as templates.approxTokens without importing it
+  // into a hot loop: chars/4 dominates for bullet lists.
+  let chars = 0;
+  for (const i of items) chars += i.length + 2;
+  return Math.ceil(chars / 4);
+}
+
+/** Serialize a checkpoint back to markdown in canonical section order. */
+export function serializeCheckpoint(doc: ParsedCheckpoint): string {
+  const out: string[] = [checkpointTitle(), ""];
+  for (const def of CHECKPOINT_SECTIONS) {
+    if (def.key === "files") {
+      if (doc.files.length === 0) continue;
+      out.push(`## ${def.heading}`, "");
+      for (const f of doc.files) out.push(`- ${f}`);
+      out.push("");
+    } else {
+      const body = doc.text.get(def.key);
+      if (!body || body.trim().length === 0) continue;
+      out.push(`## ${def.heading}`, "", body.trim(), "");
+    }
+  }
+  return out.join("\n").replace(/\n+$/, "\n");
+}
+
+export { HEADING_BY_FIELD };
