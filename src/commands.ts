@@ -8,6 +8,8 @@ import { rememberFact, type RememberFactDeps } from "./write.ts";
  */
 export const CMD_CHECKPOINT = "checkpoint";
 export const CMD_REMEMBER = "remember";
+export const CMD_DREAM = "dream";
+export const CMD_DISTILL = "distill";
 
 /**
  * Inject the plugin's commands into the resolved config at load time.
@@ -43,10 +45,22 @@ export function injectCommands(config: Config): void {
   if (!command[CMD_REMEMBER]) {
     command[CMD_REMEMBER] = {
       description: "把一条事实快速写入项目记忆（durable_knowledge）",
-      // Body is irrelevant for behavior — the intercept rewrites the turn — but
-      // a non-empty template keeps the command well-formed.
       template:
         "（记忆插件已直接处理 /remember，无需进一步操作。）\n$ARGUMENTS",
+    };
+  }
+
+  if (!command[CMD_DREAM]) {
+    command[CMD_DREAM] = {
+      description: "合并去重记忆、晋升持久知识到项目/全局记忆",
+      template: "（记忆插件正在运行 dream，请稍候。）\n$ARGUMENTS",
+    };
+  }
+
+  if (!command[CMD_DISTILL]) {
+    command[CMD_DISTILL] = {
+      description: "识别重复工作流，提炼为 skill/command 建议",
+      template: "（记忆插件正在运行 distill，请稍候。）\n$ARGUMENTS",
     };
   }
 }

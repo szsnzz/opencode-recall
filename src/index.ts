@@ -1,10 +1,13 @@
 import { tool, type Plugin } from "@opencode-ai/plugin";
 
 import {
+  CMD_DREAM,
+  CMD_DISTILL,
   CMD_REMEMBER,
   handleRemember,
   injectCommands,
 } from "./commands.ts";
+import { runDream, runDistill } from "./consolidate.ts";
 import { loadRawConfig, resolveConfig } from "./config.ts";
 import { memorySearch, type SearchScope } from "./search.ts";
 import { projectIdFromPath } from "./storage/paths.ts";
@@ -71,7 +74,7 @@ export function pickProjectRoot(
  * All behavior is explicitly triggered by tool calls or user commands. No
  * background timers, no token watchers, no silent spawning (see DESIGN.md §1).
  */
-export const MemoryPlugin: Plugin = async ({ project, directory, worktree }) => {
+export const MemoryPlugin: Plugin = async ({ client, project, directory, worktree }) => {
   // Pick a stable project root.
   //
   // opencode passes `directory` (the folder the user opened) and `worktree`
@@ -113,16 +116,27 @@ export const MemoryPlugin: Plugin = async ({ project, directory, worktree }) => 
       injectCommands(cfg);
     },
 
-    // Deterministically handle /remember: write straight to project memory and
-    // rewrite the command turn with the result (no LLM needed for the write).
     async "command.execute.before"(input, output) {
-      if (input.command !== CMD_REMEMBER) return;
-      const result = await handleRemember(input.arguments, { store, projectId });
-      if (result.handled) {
-        replacePartsWithText(
-          output.parts as unknown as { type: string; text?: string }[],
-          result.message,
-        );
+      const parts = output.parts as unknown as { type: string; text?: string }[];
+
+      if (input.command === CMD_REMEMBER) {
+        const result = await handleRemember(input.arguments, { store, projectId });
+        if (result.handled) replacePartsWithText(parts, result.message);
+        return;
+      }
+
+      const consolidateDeps = { store, projectId, sessionId: input.sessionID, client };
+
+      if (input.command === CMD_DREAM) {
+        const result = await runDream(consolidateDeps);
+        replacePartsWithText(parts, result.message);
+        return;
+      }
+
+      if (input.command === CMD_DISTILL) {
+        const result = await runDistill(consolidateDeps);
+        replacePartsWithText(parts, result.message);
+        return;
       }
     },
 
