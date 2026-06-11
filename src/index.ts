@@ -45,6 +45,23 @@ function replacePartsWithText(parts: { type: string; text?: string }[], message:
 }
 
 /**
+ * Choose a usable project root from opencode's `worktree` and `directory`.
+ *
+ * A worktree is only trustworthy when it points at a real folder. For non-git
+ * projects opencode reports worktree as "/", "", "." or "\\" — none of which
+ * is the folder the user actually opened. In those cases we fall back to
+ * `directory`. Exported for testing.
+ */
+export function pickProjectRoot(
+  worktree: string | undefined,
+  directory: string,
+): string {
+  const wt = (worktree ?? "").trim();
+  const meaningless = wt === "" || wt === "/" || wt === "." || wt === "\\";
+  return meaningless ? directory : wt;
+}
+
+/**
  * opencode-memory — M1 + M2.
  *
  * M1 (minimal loop): remember_fact + memory_search.
@@ -55,9 +72,15 @@ function replacePartsWithText(parts: { type: string; text?: string }[], message:
  * background timers, no token watchers, no silent spawning (see DESIGN.md §1).
  */
 export const MemoryPlugin: Plugin = async ({ project, directory, worktree }) => {
-  // Stable project root: prefer the worktree (shared across all sessions of a
-  // repo), falling back to the plugin directory.
-  const projectRoot = project?.worktree || worktree || directory;
+  // Pick a stable project root.
+  //
+  // opencode passes `directory` (the folder the user opened) and `worktree`
+  // (the git worktree root). When the folder is NOT a git repo, opencode
+  // reports the project as "global" and worktree degrades to "/" (or "" / "."),
+  // which is useless for both config lookup and project identity. So we only
+  // trust a worktree that looks like a real, non-root path; otherwise we use
+  // `directory`, which is always the actual working folder.
+  const projectRoot = pickProjectRoot(project?.worktree ?? worktree, directory);
 
   // Config source: a standalone `.opencode/memory.json` file plus env overrides.
   //
