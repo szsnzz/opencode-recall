@@ -13,18 +13,35 @@ opencode 的长期记忆插件：**显式写入** + **按需 FTS5 检索**，三
 
 ## 安装
 
-从 [Releases](https://github.com/szsnzz/opencode-recall/releases) 下载页拿到最新版本的 tarball 直链，填进项目（或全局）`opencode.json` 的 `plugin` 字段：
+推荐**手动下载到本地**再引用——你掌握下载时机，opencode 启动时不必联网。
+
+1. 到 [Releases](https://github.com/szsnzz/opencode-recall/releases) 下载最新版本的 `opencode-recall-<version>.tgz`，存到本地任意固定位置，例如 `D:/opencode-plugins/opencode-recall-0.1.0.tgz`。
+2. 把该 **tarball 的绝对路径**填进项目（或全局）`opencode.json` 的 `plugin` 字段：
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": ["https://github.com/szsnzz/opencode-recall/releases/download/v0.1.0/opencode-recall-0.1.0.tgz"]
+  "plugin": ["D:/opencode-plugins/opencode-recall-0.1.0.tgz"]
 }
 ```
 
-opencode 启动时会自动下载、安装插件及其依赖（缓存在 `~/.cache/opencode/node_modules/`）。无需手动建 `package.json` 或桥接文件。
+opencode 启动时会从这个本地 tarball 安装插件及其依赖（缓存在 `~/.cache/opencode/node_modules/`）。无需手动建 `package.json` 或桥接文件。
 
-> 升级到新版本时，把 url 里的版本号换成新的 tag 即可。
+> **路径写法**：用**绝对路径**，正斜杠 `/`（如 `D:/...`）或反斜杠都可，但**不要**用 `file:///` 前缀——底层的 Bun 不接受该形式。
+> macOS / Linux 同理：`"/Users/you/opencode-plugins/opencode-recall-0.1.0.tgz"`。
+
+> **升级**：下载新版本 tarball，把 `plugin` 里的路径换成新文件即可。
+
+<details>
+<summary>备选：直接引用 Release 远程 URL（启动时联网下载）</summary>
+
+如果不介意 opencode 启动时联网，也可以直接填 Release 直链：
+
+```json
+{ "plugin": ["https://github.com/szsnzz/opencode-recall/releases/download/v0.1.0/opencode-recall-0.1.0.tgz"] }
+```
+
+</details>
 
 ## 配置（可选）
 
