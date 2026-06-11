@@ -12,7 +12,7 @@
 
 | 维度 | 决策 | 理由 |
 |---|---|---|
-| 平台 | 上游官方 opencode，`@opencode-ai/sdk` + `@opencode-ai/plugin` | 可移植，不绑定 fork |
+| 平台 | 上游官方 opencode，`@opencode-ai/sdk` + `@opencode-ai/plugin`；插件运行时是 **Node.js**（见 §1.1） | 可移植，不绑定 fork |
 | 记忆**读取** | 只做"方案 B"：agent 主动检索（`memory_search` 工具），**不注入上下文** | 对 prompt 缓存零影响、不占额度、不污染上下文 |
 | 记忆**写入** | **显式触发**：A（用户命令）+ B（agent 工具），二者并存 | 砍掉最不稳定的自动触发器；天然成为质量闸门，避免记忆冗杂 |
 | 写入工具粒度 | 拆成语义清晰的多个工具，而非一个万能工具 | 对模型更友好，更容易"用对" |
@@ -25,6 +25,21 @@
 2. **记忆价值在密度，不在完整。** 显式触发即质量闸门——存下来的都是"被判断为值得记"的条目，而非机械快照。
 3. **写入器不跑后台 LLM。** 要记的内容由主 agent 在它自己的上下文里当场产出（它本就掌握全部信息），通过工具交给插件**直接落盘**。唯一需要额外跑 LLM 的地方是收敛命令（dream/distill）。
 4. **文件 + SQLite 解耦。** 模块间只通过"Markdown 文件 + FTS5 索引"通信，任何一块都能独立测试。
+
+### 1.1 运行时约束（联调实测，务必遵守）
+
+这些是把插件真正跑进 opencode **桌面版**时踩出来、并已验证的硬约束。它们推翻了初版设计的几个假设，后续改代码不要违反：
+
+| 约束 | 实测结论 | 影响 |
+|---|---|---|
+| **运行时是 Node.js，不是 Bun** | 桌面版用 `diag` 工具实测：`Bun` 全局不存在，`process.versions.node = v24.x` | 不能用任何 `Bun.*` API |
+| **SQLite 用 `node:sqlite`** | `bun:sqlite` 在 Node 下报 `No such built-in module`，整个插件静默加载失败 | 存储层走 Node 内置 `node:sqlite`（`DatabaseSync`，自带 FTS5）。封装在 `src/storage/sqlite.ts`，对外保持 `bun:sqlite` 风格 API |
+| **禁用 TS 参数属性等非"纯类型"语法** | opencode 用 Node 的 **type-stripping** 加载 `.ts`，遇到 `constructor(private x)` 直接 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX` | 源码与测试一律不用参数属性、`enum`、`namespace`；类型导入用 `import type` / 内联 `type` |
+| **配置走独立文件，不进 opencode.json** | opencode 严格校验 `opencode.json`，未知顶层 key（如 `memory`）会报错并使整个会话起不来 | 配置放 `.opencode/memory.json`（opencode 不解析），见 §7 |
+| **本地插件依赖要预装** | 桌面版自身版本为 `local`，会尝试 `@opencode-ai/plugin@local`（不存在）→ 后台安装失败 | `.opencode/package.json` 显式声明 `@opencode-ai/plugin` 版本并预装；插件文件用具名或 default 导出均可 |
+| **projectRoot 取 `directory`，不轻信 `worktree`** | 非 git 目录时 opencode 把项目当 `global`、`worktree="/"`，会让配置查找与项目身份算到根目录 | 用 `pickProjectRoot()`：worktree 是真实路径才用，否则退回 `directory`（见 `src/index.ts`） |
+| **测试用 `node --test`** | bun 缺 `node:sqlite`，DB 测试在 `bun test` 下必然失败 | 测试运行时与生产一致：`node --experimental-strip-types --test`；`test/helpers/bun-test-shim.ts` 兼容旧的 `expect` 风格 |
+
 
 ---
 
@@ -49,7 +64,7 @@
 ┌──────────────────────────────────────────────────────────┐
 │ ③ 存储层                                                   │
 │  - Markdown 文件（global / projects / sessions 三层）       │
-│  - SQLite FTS5 索引（bun:sqlite，插件自管，不碰 opencode 库）│
+│  - SQLite FTS5 索引（node:sqlite，插件自管，不碰 opencode 库）│
 │  - reconcile 增量扫盘同步                                   │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -104,7 +119,7 @@
 
 ### 3.4 SQLite FTS5 索引（插件自建）
 
-用 `bun:sqlite`，独立文件 `<memoryRoot>/index.db`，**绝不触碰 opencode 自己的数据库**：
+用 `node:sqlite`（Node 内置，含 FTS5；封装见 `src/storage/sqlite.ts`），独立文件 `<memoryRoot>/index.db`，**绝不触碰 opencode 自己的数据库**：
 
 ```sql
 CREATE TABLE memory_doc (
@@ -313,7 +328,7 @@ opencode-memory/
 │   ├── config.ts           # 配置解析 + 默认值
 │   ├── storage/
 │   │   ├── paths.ts        # 三层路径解析/构建（防路径穿越）
-│   │   ├── index-db.ts     # bun:sqlite + FTS5 schema 初始化
+│   │   ├── index-db.ts     # node:sqlite + FTS5 schema 初始化
 │   │   ├── reconcile.ts    # 增量索引（fingerprint 比对）
 │   │   ├── fts-query.ts    # 查询 token 化
 │   │   └── templates.ts    # checkpoint / MEMORY 模板 + 段预算
@@ -340,7 +355,7 @@ opencode-memory/
 | MEMORY.md 随时间膨胀 | 写入时段内去重合并；`/dream` 定期收敛压缩；显式触发本身已大幅减少噪音 |
 | 多会话并发写同一项目 MEMORY.md | 原子写（临时文件 + rename）；`/dream` 串行化 |
 | FTS5 query 特殊字符崩解析器 | `fts-query.ts` 统一 token 化 + 短语化 |
-| `bun:sqlite` 依赖 | opencode 插件运行在 Bun 上，原生可用，无需额外安装 |
+| SQLite 依赖 | 用 Node 内置 `node:sqlite`（Node 22.5+/24 稳定，含 FTS5），无需安装原生模块；插件运行时为 Node（见 §1.1） |
 | 记忆泄漏到无关会话/项目 | 检索 SQL 强制 scope 过滤；路径构建做穿越防护 |
 
 ---
