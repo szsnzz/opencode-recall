@@ -18,7 +18,15 @@ export interface MemoryConfig {
   };
   dream: { intervalDays: number };
   distill: { intervalDays: number };
+  /** Diagnostic logging via opencode's app log channel. */
+  log: { level: LogLevel };
+  /** Lightweight usage counters stored in the plugin's own SQLite index. */
+  metrics: { enabled: boolean };
 }
+
+export type LogLevel = "debug" | "info" | "warn" | "error";
+
+const LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 
 /** Raw, untrusted shape as it may appear in opencode.json under the `memory` key. */
 export interface RawMemoryConfig {
@@ -31,6 +39,8 @@ export interface RawMemoryConfig {
   };
   dream?: { intervalDays?: number };
   distill?: { intervalDays?: number };
+  log?: { level?: string };
+  metrics?: { enabled?: boolean };
 }
 
 export const DEFAULT_MEMORY_ROOT = "~/.config/opencode/memory";
@@ -123,5 +133,14 @@ export function resolveConfig(raw: RawMemoryConfig | undefined): MemoryConfig {
         clampNumber(r.distill?.intervalDays, 30, 0, 3650),
       ),
     },
+    log: { level: normalizeLogLevel(r.log?.level) },
+    metrics: { enabled: r.metrics?.enabled !== false },
   };
+}
+
+/** Coerce an untrusted log level string to a valid LogLevel (default "info"). */
+function normalizeLogLevel(value: unknown): LogLevel {
+  return typeof value === "string" && (LOG_LEVELS as readonly string[]).includes(value)
+    ? (value as LogLevel)
+    : "info";
 }

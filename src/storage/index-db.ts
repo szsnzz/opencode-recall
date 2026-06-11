@@ -68,6 +68,14 @@ function migrate(db: Database): void {
       tokenize = 'unicode61 remove_diacritics 1'
     );
   `);
+  // Lightweight usage counters (M5). Single-row-per-key tally; see metrics.ts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_metric (
+      key        TEXT PRIMARY KEY,
+      count      INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+  `);
 }
 
 /**

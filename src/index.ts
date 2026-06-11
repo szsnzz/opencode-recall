@@ -9,6 +9,8 @@ import {
 } from "./commands.ts";
 import { runDream, runDistill } from "./consolidate.ts";
 import { loadRawConfig, resolveConfig } from "./config.ts";
+import { Logger } from "./logger.ts";
+import { bump, formatStats, readAll } from "./metrics.ts";
 import { memorySearch, type SearchScope } from "./search.ts";
 import { projectIdFromPath } from "./storage/paths.ts";
 import { CHECKPOINT_SECTIONS } from "./storage/templates.ts";
@@ -97,10 +99,20 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
   const projectId = projectIdFromPath(projectRoot);
 
   const store = new MemoryStore(config);
+  const log = new Logger(client, config.log.level);
 
   if (!config.enabled) {
+    log.info("memory plugin disabled via config");
     return { async dispose() {} };
   }
+
+  log.info("memory plugin initialized", {
+    projectRoot,
+    root: config.root,
+    projectId,
+    logLevel: config.log.level,
+    metrics: config.metrics.enabled,
+  });
 
   const checkpointFieldDesc = CHECKPOINT_SECTIONS.map(
     (s) => `${s.key}(${s.heading})`,
@@ -122,6 +134,7 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
       if (input.command === CMD_REMEMBER) {
         const result = await handleRemember(input.arguments, { store, projectId });
         if (result.handled) replacePartsWithText(parts, result.message);
+        log.info("/remember command");
         return;
       }
 
@@ -129,12 +142,16 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
 
       if (input.command === CMD_DREAM) {
         const result = await runDream(consolidateDeps);
+        bump(store, result.skipped ? "dream.skip" : "dream.run");
+        log.info("/dream command", { skipped: result.skipped });
         replacePartsWithText(parts, result.message);
         return;
       }
 
       if (input.command === CMD_DISTILL) {
         const result = await runDistill(consolidateDeps);
+        bump(store, result.skipped ? "distill.skip" : "distill.run");
+        log.info("/distill command", { skipped: result.skipped });
         replacePartsWithText(parts, result.message);
         return;
       }
@@ -160,24 +177,37 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
             .describe("true 表示这条跨项目通用，写入全局记忆而非项目记忆"),
         },
         async execute(args) {
-          const result = await rememberFact(
-            {
+          try {
+            const result = await rememberFact(
+              {
+                section: args.section,
+                content: args.content,
+                global: args.global,
+              },
+              { store, projectId },
+            );
+            bump(store, `remember.${result.outcome}`);
+            if (result.scope === "global") bump(store, "remember.global");
+            log.info("remember_fact", {
+              outcome: result.outcome,
+              scope: result.scope,
               section: args.section,
-              content: args.content,
-              global: args.global,
-            },
-            { store, projectId },
-          );
-          const verb =
-            result.outcome === "added"
-              ? "已记录"
-              : result.outcome === "updated"
-                ? "已更新已有条目"
-                : "已存在，跳过";
-          return {
-            title: `remember_fact: ${result.outcome}`,
-            output: `${verb}（${result.scope} 记忆，段=${args.section}）\n${result.path}`,
-          };
+            });
+            const verb =
+              result.outcome === "added"
+                ? "已记录"
+                : result.outcome === "updated"
+                  ? "已更新已有条目"
+                  : "已存在，跳过";
+            return {
+              title: `remember_fact: ${result.outcome}`,
+              output: `${verb}（${result.scope} 记忆，段=${args.section}）\n${result.path}`,
+            };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error("remember_fact failed", { error: msg });
+            return { title: "remember_fact: 失败", output: `记忆写入失败：${msg}` };
+          }
         },
       }),
 
@@ -201,29 +231,38 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
           open_questions: tool.schema.string().optional().describe("开放问题：未决事项、杂项"),
         },
         async execute(args, context) {
-          const result = await saveCheckpoint(
-            {
-              intent: args.intent,
-              next_action: args.next_action,
-              current_work: args.current_work,
-              files: args.files,
-              discovered: args.discovered,
-              errors_fixes: args.errors_fixes,
-              decisions: args.decisions,
-              open_questions: args.open_questions,
-            },
-            { store, sessionId: context.sessionID },
-          );
-          if (result.changed.length === 0) {
+          try {
+            const result = await saveCheckpoint(
+              {
+                intent: args.intent,
+                next_action: args.next_action,
+                current_work: args.current_work,
+                files: args.files,
+                discovered: args.discovered,
+                errors_fixes: args.errors_fixes,
+                decisions: args.decisions,
+                open_questions: args.open_questions,
+              },
+              { store, sessionId: context.sessionID },
+            );
+            if (result.changed.length === 0) {
+              log.debug("save_checkpoint no-op");
+              return {
+                title: "save_checkpoint: 无更新",
+                output: "没有提供任何内容，检查点未改动。",
+              };
+            }
+            bump(store, "checkpoint.saved");
+            log.info("save_checkpoint", { changed: result.changed });
             return {
-              title: "save_checkpoint: 无更新",
-              output: "没有提供任何内容，检查点未改动。",
+              title: `save_checkpoint: 更新 ${result.changed.length} 段`,
+              output: `已存档检查点（${result.changed.join(", ")}）\n${result.path}`,
             };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error("save_checkpoint failed", { error: msg });
+            return { title: "save_checkpoint: 失败", output: `检查点保存失败：${msg}` };
           }
-          return {
-            title: `save_checkpoint: 更新 ${result.changed.length} 段`,
-            output: `已存档检查点（${result.changed.join(", ")}）\n${result.path}`,
-          };
         },
       }),
 
@@ -231,14 +270,22 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
         description: "追加一条简短笔记到会话草稿本，用于零散观察、待办、临时备忘。",
         args: { content: tool.schema.string().describe("一句话笔记") },
         async execute(args, context) {
-          const result = await appendNote(args.content, {
-            store,
-            sessionId: context.sessionID,
-          });
-          return {
-            title: "note: 已追加",
-            output: `已记到会话草稿本\n${result.path}`,
-          };
+          try {
+            const result = await appendNote(args.content, {
+              store,
+              sessionId: context.sessionID,
+            });
+            bump(store, "note.added");
+            log.info("note");
+            return {
+              title: "note: 已追加",
+              output: `已记到会话草稿本\n${result.path}`,
+            };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error("note failed", { error: msg });
+            return { title: "note: 失败", output: `笔记写入失败：${msg}` };
+          }
         },
       }),
 
@@ -256,33 +303,64 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
           limit: tool.schema.number().optional().describe("返回条数上限"),
         },
         async execute(args, context) {
-          const hits = await memorySearch(
-            {
-              query: args.query,
-              scope: args.scope as SearchScope | undefined,
-              limit: args.limit,
-            },
-            { store, projectId, sessionId: context.sessionID },
-          );
+          try {
+            const hits = await memorySearch(
+              {
+                query: args.query,
+                scope: args.scope as SearchScope | undefined,
+                limit: args.limit,
+              },
+              { store, projectId, sessionId: context.sessionID },
+            );
 
-          if (hits.length === 0) {
+            bump(store, "search.count");
+            if (hits.length === 0) bump(store, "search.zero_hits");
+            log.info("memory_search", {
+              scope: args.scope ?? "all",
+              hits: hits.length,
+            });
+
+            if (hits.length === 0) {
+              return {
+                title: "memory_search: 0 条",
+                output: "没有找到相关记忆。",
+              };
+            }
+
+            const body = hits
+              .map((h, i) => {
+                const score = h.score.toFixed(3);
+                return `${i + 1}. [${h.scope}] score=${score}\n   ${h.snippet}\n   来源: ${h.path}`;
+              })
+              .join("\n\n");
+
             return {
-              title: "memory_search: 0 条",
-              output: "没有找到相关记忆。",
+              title: `memory_search: ${hits.length} 条`,
+              output: body,
             };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error("memory_search failed", { error: msg });
+            return { title: "memory_search: 失败", output: `检索失败：${msg}` };
           }
+        },
+      }),
 
-          const body = hits
-            .map((h, i) => {
-              const score = h.score.toFixed(3);
-              return `${i + 1}. [${h.scope}] score=${score}\n   ${h.snippet}\n   来源: ${h.path}`;
-            })
-            .join("\n\n");
-
-          return {
-            title: `memory_search: ${hits.length} 条`,
-            output: body,
-          };
+      memory_stats: tool({
+        description:
+          "查看本插件的记忆使用统计：写入/检索/收敛各项的累计次数。" +
+          "用于了解记忆系统是否被有效使用、检索零命中率是否偏高等。",
+        args: {},
+        async execute() {
+          try {
+            const rows = readAll(store.index());
+            log.debug("memory_stats", { keys: rows.length });
+            return { title: "memory_stats", output: formatStats(rows) };
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            log.error("memory_stats failed", { error: msg });
+            return { title: "memory_stats: 失败", output: `读取统计失败：${msg}` };
+          }
         },
       }),
     },

@@ -119,3 +119,25 @@ describe("loadRawConfig", () => {
     expect(loadRawConfig(root).enabled).toBe(false);
   });
 });
+
+describe("resolveConfig log/metrics (M5)", () => {
+  test("defaults: log.level=info, metrics.enabled=true", () => {
+    const c = resolveConfig({});
+    expect(c.log.level).toBe("info");
+    expect(c.metrics.enabled).toBe(true);
+  });
+
+  test("accepts a valid log level", () => {
+    expect(resolveConfig({ log: { level: "debug" } }).log.level).toBe("debug");
+    expect(resolveConfig({ log: { level: "error" } }).log.level).toBe("error");
+  });
+
+  test("falls back to info on an invalid log level", () => {
+    expect(resolveConfig({ log: { level: "loud" } }).log.level).toBe("info");
+    expect(resolveConfig({ log: { level: 5 as never } }).log.level).toBe("info");
+  });
+
+  test("metrics can be disabled explicitly", () => {
+    expect(resolveConfig({ metrics: { enabled: false } }).metrics.enabled).toBe(false);
+  });
+});

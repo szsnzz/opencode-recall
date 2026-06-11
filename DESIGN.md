@@ -314,7 +314,9 @@ memory_search: tool({
     "limit": 10
   },
   "dream":   { "intervalDays": 7  },       // 仅用于软提醒，不自动跑
-  "distill": { "intervalDays": 30 }
+  "distill": { "intervalDays": 30 },
+  "log":     { "level": "info" },           // debug | info | warn | error（M5）
+  "metrics": { "enabled": true }            // 轻量使用计数，落在插件自建 SQLite（M5）
 }
 ```
 
@@ -349,13 +351,18 @@ opencode-memory/
 │   ├── write.ts            # ② remember_fact / save_checkpoint / note 的 execute
 │   ├── search.ts           # ④ memory_search 工具 + BM25 + scope 过滤 + 地板
 │   ├── commands.ts         # A：/checkpoint /remember 注册
-│   └── consolidate.ts      # ⑤ /dream /distill 编排
+│   ├── consolidate.ts      # ⑤ /dream /distill 编排
+│   ├── logger.ts           # M5：诊断日志（client.app.log，容错 + 级别门控）
+│   └── metrics.ts          # M5：使用计数（SQLite memory_metric 表）+ memory_stats
 └── test/
     ├── paths.test.ts       # 路径解析 / 穿越防护
     ├── fts-query.test.ts   # 特殊字符不崩、token 化正确
     ├── reconcile.test.ts   # 增量索引 / 删除清理
     ├── search.test.ts      # BM25 排序 / 地板过滤 / scope 隔离
-    └── write.test.ts       # 段合并去重 / 原子写 / 模板渲染
+    ├── write.test.ts       # 段合并去重 / 原子写 / 模板渲染
+    ├── consolidate.test.ts # /dream /distill 编排 + 软提醒
+    ├── logger.test.ts      # M5：级别门控 + 容错（不抛/不阻塞）
+    └── metrics.test.ts     # M5：计数累加 / ON CONFLICT / 禁用开关
 ```
 
 ---
@@ -380,7 +387,13 @@ opencode-memory/
 2. **M2 — 完整写入** ✅：`save_checkpoint` + `note` + checkpoint/MEMORY 模板与段合并 + 命令 `/checkpoint` `/remember`。
 3. **M3 — 三层晋升** ✅：全局记忆 + 写入时的项目/全局路由。
 4. **M4 — 收敛** ✅（v1 简化版）：`/dream`（合并去重晋升）+ `/distill`（工作流沉淀）。当前为最小框架——dream 只读 checkpoint/MEMORY 不读原始会话历史，distill 只产出建议不自动落地。两处均为有意的成本/安全取舍，详见 §6。先跑一段时间收集反馈再决定是否加重。
-5. **M5 — 打磨**：配置项、可选的缓存友好注入兜底、`/dream` 软提醒、指标与日志。
+5. **M5 — 打磨** 🚧（进行中）：配置项 ✅、`/dream` 软提醒 ✅（M4 已做）、**诊断日志 + 使用指标 ✅**（见下）、可选的缓存友好注入兜底（暂不做，待指标反馈再议，见 §6 原则）。
+
+### M5 诊断日志与使用指标
+
+- **日志（`src/logger.ts`）**：走 opencode 自己的日志通道 `client.app.log`（service=`memory`），与 opencode 日志同文件。两条硬保证：①**绝不抛出、绝不阻塞**——fire-and-forget，任何失败（HTTP 错误、无 client）都被吞掉，日志故障不影响工具；②**级别门控**——低于 `log.level` 阈值的条目在做任何事之前丢弃。无 client 时（如单测）退回 `console`。每个工具的 execute 都包了 try/catch：异常先记 `error` 再以友好消息返回，**修掉了此前"插件异常被静默吞掉"的盲区**。
+- **指标（`src/metrics.ts`）**：复用插件自建 SQLite 的 `memory_metric` 表（单行单 key 计数），不新增文件。计数项：`remember.{added,updated,duplicate,global}`、`search.{count,zero_hits}`、`checkpoint.saved`、`note.added`、`dream.{run,skip}`、`distill.{run,skip}`。`bump()` 失败同样被吞掉，受 `metrics.enabled` 控制。
+- **读取**：新增 `memory_stats` 工具（无参），随时输出累计统计（含检索零命中率），用于"先跑一段时间收集反馈"——例如零命中率偏高提示分词或 `scoreFloor` 需要调。
 
 ---
 

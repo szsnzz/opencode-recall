@@ -64,11 +64,15 @@ bun install   # 或 npm install
 {
   "enabled": true,
   "root": "<PROJECT>/_memory_data",
-  "search": { "scoreFloor": 0.15, "limit": 10 }
+  "search": { "scoreFloor": 0.15, "limit": 10 },
+  "log": { "level": "info" },
+  "metrics": { "enabled": true }
 }
 ```
 
 - `root` 省略时默认 `~/.config/opencode/memory`（全局共享）。要项目隔离就显式指定。
+- `log.level`：`debug` | `info` | `warn` | `error`，默认 `info`。日志写入 opencode 自己的日志文件（service=`memory`），排查问题时可调到 `debug`。
+- `metrics.enabled`：默认 `true`，记录写入/检索/收敛的使用计数；用 `memory_stats` 工具随时查看。
 - 环境变量覆盖：`OPENCODE_MEMORY_ROOT=<dir>`、`OPENCODE_MEMORY_DISABLED=1`。
 - **不要**把这些配置塞进 `opencode.json`：opencode 严格校验该文件，未知顶层 key（如 `memory`）
   会报 `Unrecognized key` 并使整个会话起不来。
@@ -103,7 +107,7 @@ $ARGUMENTS
 ### 1.5 重新加载项目验证
 
 重载 `<PROJECT>` 后：
-1. 让 agent 列工具，应能看到 `remember_fact` / `memory_search` / `save_checkpoint` / `note`。
+1. 让 agent 列工具，应能看到 `remember_fact` / `memory_search` / `save_checkpoint` / `note` / `memory_stats`。
 2. 调 `remember_fact` 记一条，再 `memory_search` 搜回来。
 3. 检查 `<PROJECT>/_memory_data/` 出现 `projects/<id>/MEMORY.md`、`index.db` 等。
 
