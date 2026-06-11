@@ -1,8 +1,11 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, afterEach } from "bun:test";
 import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { expandRoot, resolveConfig } from "../src/config.ts";
+import { expandRoot, resolveConfig, loadRawConfig } from "../src/config.ts";
 
 describe("expandRoot", () => {
   test("expands leading ~/", () => {
@@ -53,5 +56,66 @@ describe("resolveConfig", () => {
     });
     expect(c.search.scoreFloor).toBe(0.15);
     expect(c.search.limit).toBe(10);
+  });
+});
+
+describe("loadRawConfig", () => {
+  let root: string;
+  const savedRoot = process.env["OPENCODE_MEMORY_ROOT"];
+  const savedDisabled = process.env["OPENCODE_MEMORY_DISABLED"];
+
+  afterEach(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+    // restore env
+    if (savedRoot === undefined) delete process.env["OPENCODE_MEMORY_ROOT"];
+    else process.env["OPENCODE_MEMORY_ROOT"] = savedRoot;
+    if (savedDisabled === undefined) delete process.env["OPENCODE_MEMORY_DISABLED"];
+    else process.env["OPENCODE_MEMORY_DISABLED"] = savedDisabled;
+  });
+
+  test("returns empty config when no file exists", () => {
+    root = mkdtempSync(join(tmpdir(), "mem-cfg-"));
+    delete process.env["OPENCODE_MEMORY_ROOT"];
+    delete process.env["OPENCODE_MEMORY_DISABLED"];
+    expect(loadRawConfig(root)).toEqual({});
+  });
+
+  test("reads .opencode/memory.json", () => {
+    root = mkdtempSync(join(tmpdir(), "mem-cfg-"));
+    mkdirSync(join(root, ".opencode"), { recursive: true });
+    writeFileSync(
+      join(root, ".opencode", "memory.json"),
+      JSON.stringify({ root: "/custom/mem", search: { limit: 5 } }),
+    );
+    delete process.env["OPENCODE_MEMORY_ROOT"];
+    const raw = loadRawConfig(root);
+    expect(raw.root).toBe("/custom/mem");
+    expect(raw.search?.limit).toBe(5);
+  });
+
+  test("never throws on invalid JSON", () => {
+    root = mkdtempSync(join(tmpdir(), "mem-cfg-"));
+    mkdirSync(join(root, ".opencode"), { recursive: true });
+    writeFileSync(join(root, ".opencode", "memory.json"), "{ not valid json");
+    expect(() => loadRawConfig(root)).not.toThrow();
+    expect(loadRawConfig(root)).toEqual({});
+  });
+
+  test("env OPENCODE_MEMORY_ROOT overrides file", () => {
+    root = mkdtempSync(join(tmpdir(), "mem-cfg-"));
+    mkdirSync(join(root, ".opencode"), { recursive: true });
+    writeFileSync(
+      join(root, ".opencode", "memory.json"),
+      JSON.stringify({ root: "/from/file" }),
+    );
+    process.env["OPENCODE_MEMORY_ROOT"] = "/from/env";
+    expect(loadRawConfig(root).root).toBe("/from/env");
+  });
+
+  test("env OPENCODE_MEMORY_DISABLED=1 disables", () => {
+    root = mkdtempSync(join(tmpdir(), "mem-cfg-"));
+    delete process.env["OPENCODE_MEMORY_ROOT"];
+    process.env["OPENCODE_MEMORY_DISABLED"] = "1";
+    expect(loadRawConfig(root).enabled).toBe(false);
   });
 });

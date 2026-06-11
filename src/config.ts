@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 /**
@@ -33,6 +34,41 @@ export interface RawMemoryConfig {
 }
 
 export const DEFAULT_MEMORY_ROOT = "~/.config/opencode/memory";
+
+/**
+ * Load the plugin's raw config from its own file, layered with env overrides.
+ *
+ * Source order (later wins):
+ *   1. `<projectRoot>/.opencode/memory.json`  — project-local config
+ *   2. env `OPENCODE_MEMORY_ROOT`             — override the memory root
+ *   3. env `OPENCODE_MEMORY_DISABLED=1`       — hard disable
+ *
+ * We intentionally avoid opencode.json: upstream opencode rejects unknown
+ * top-level keys there, so a `memory` block would break the whole session.
+ */
+export function loadRawConfig(projectRoot: string): RawMemoryConfig {
+  let fileConfig: RawMemoryConfig = {};
+  try {
+    const file = resolve(projectRoot, ".opencode", "memory.json");
+    const text = readFileSync(file, "utf8");
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") {
+      fileConfig = parsed as RawMemoryConfig;
+    }
+  } catch {
+    // No file / invalid JSON -> defaults. Never throw from config loading.
+  }
+
+  const envRoot = process.env["OPENCODE_MEMORY_ROOT"];
+  if (typeof envRoot === "string" && envRoot.trim().length > 0) {
+    fileConfig.root = envRoot;
+  }
+  if (process.env["OPENCODE_MEMORY_DISABLED"] === "1") {
+    fileConfig.enabled = false;
+  }
+
+  return fileConfig;
+}
 
 /** Expand a leading `~` to the user's home directory and resolve to absolute. */
 export function expandRoot(root: string): string {

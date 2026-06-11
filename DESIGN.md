@@ -264,26 +264,37 @@ memory_search: tool({
 
 ---
 
-## 7. 配置（opencode.json）
+## 7. 配置（独立文件 `.opencode/memory.json`）
 
-插件通过 `client.config.get()` 读取自定义 `memory` 段：
+> **重要修正（联调发现）**：最初设计打算把配置放在 `opencode.json` 的 `memory`
+> 段、用 `client.config.get()` 读取。实测发现**上游官方 opencode 对
+> `opencode.json` 做严格 schema 校验，拒绝任何未知顶层 key**，会报
+> `Unrecognized key: memory` 并导致整个会话无法开启。MiMo 能用是因为它是 fork，
+> 把 `memory` 加进了自己的 schema。因此插件改为从**自己拥有、opencode 不解析**
+> 的独立文件读取配置。
+
+插件从项目根的 `.opencode/memory.json` 读取配置（opencode 不会校验此文件）：
 
 ```jsonc
+// <projectRoot>/.opencode/memory.json
 {
-  "plugin": ["opencode-memory"],
-  "memory": {
-    "enabled": true,
-    "root": "~/.config/opencode/memory",   // 记忆根目录，可改为独立目录
-    "search": {
-      "scoreFloor": 0.15,
-      "defaultScope": "project+global+session",
-      "limit": 10
-    },
-    "dream":   { "intervalDays": 7  },       // 仅用于软提醒，不自动跑
-    "distill": { "intervalDays": 30 }
-  }
+  "enabled": true,
+  "root": "~/.config/opencode/memory",   // 记忆根目录，可改为独立目录
+  "search": {
+    "scoreFloor": 0.15,
+    "limit": 10
+  },
+  "dream":   { "intervalDays": 7  },       // 仅用于软提醒，不自动跑
+  "distill": { "intervalDays": 30 }
 }
 ```
+
+插件本身仍通过 `opencode.json` 的 `plugin` 字段（或本地 `.opencode/plugins/`）加载——
+那是 opencode 认识的合法字段。只有**插件自己的配置**走独立文件。
+
+环境变量覆盖（later wins）：
+- `OPENCODE_MEMORY_ROOT` — 覆盖记忆根目录
+- `OPENCODE_MEMORY_DISABLED=1` — 硬关闭插件
 
 注意：**没有任何 `thresholds` / `writeOnIdle` / `auto` 配置**——因为不存在自动触发。
 

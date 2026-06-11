@@ -5,7 +5,7 @@ import {
   handleRemember,
   injectCommands,
 } from "./commands.ts";
-import { resolveConfig, type RawMemoryConfig } from "./config.ts";
+import { loadRawConfig, resolveConfig } from "./config.ts";
 import { memorySearch, type SearchScope } from "./search.ts";
 import { projectIdFromPath } from "./storage/paths.ts";
 import { CHECKPOINT_SECTIONS } from "./storage/templates.ts";
@@ -54,22 +54,20 @@ function replacePartsWithText(parts: { type: string; text?: string }[], message:
  * All behavior is explicitly triggered by tool calls or user commands. No
  * background timers, no token watchers, no silent spawning (see DESIGN.md §1).
  */
-export const MemoryPlugin: Plugin = async ({ client, project, directory, worktree }) => {
-  // Resolve config from opencode.json's custom `memory` block (best-effort).
-  let rawMemory: RawMemoryConfig | undefined;
-  try {
-    const cfg = (await client.config.get()) as { data?: Record<string, unknown> };
-    const data = cfg?.data ?? (cfg as unknown as Record<string, unknown>);
-    rawMemory = data?.["memory"] as RawMemoryConfig | undefined;
-  } catch {
-    rawMemory = undefined;
-  }
+export const MemoryPlugin: Plugin = async ({ project, directory, worktree }) => {
+  // Stable project root: prefer the worktree (shared across all sessions of a
+  // repo), falling back to the plugin directory.
+  const projectRoot = project?.worktree || worktree || directory;
 
+  // Config source: a standalone `.opencode/memory.json` file plus env overrides.
+  //
+  // We deliberately do NOT put config under opencode.json's `memory` key —
+  // upstream opencode strictly validates that file and REJECTS unknown keys
+  // ("Unrecognized key: memory"), which breaks the whole session. The plugin
+  // owns its own config file, which opencode never parses. See DESIGN.md §7.
+  const rawMemory = loadRawConfig(projectRoot);
   const config = resolveConfig(rawMemory);
 
-  // Stable project id from the repo root. Prefer the worktree (shared across
-  // all sessions of a repo), falling back to the plugin directory.
-  const projectRoot = project?.worktree || worktree || directory;
   const projectId = projectIdFromPath(projectRoot);
 
   const store = new MemoryStore(config);
