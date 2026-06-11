@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute } from "node:path";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { expandRoot, resolveConfig, loadRawConfig } from "../src/config.ts";
 
@@ -20,6 +20,21 @@ describe("expandRoot", () => {
 
   test("absolute-resolves a relative path", () => {
     expect(isAbsolute(expandRoot("./rel"))).toBe(true);
+  });
+
+  test("resolves a relative path against baseDir, not cwd", () => {
+    const base = process.platform === "win32" ? "D:\\proj\\app" : "/proj/app";
+    const out = expandRoot("./_memory_data", base);
+    expect(out).toBe(join(base, "_memory_data"));
+  });
+
+  test("absolute root ignores baseDir", () => {
+    const abs = process.platform === "win32" ? "C:\\abs\\mem" : "/abs/mem";
+    expect(expandRoot(abs, "/some/base")).toBe(resolve(abs));
+  });
+
+  test("~ ignores baseDir", () => {
+    expect(expandRoot("~", "/some/base")).toBe(homedir());
   });
 });
 

@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, isAbsolute } from "node:path";
 
 /**
  * Resolved memory configuration. All fields are concrete (no optionals) so the
@@ -80,17 +80,28 @@ export function loadRawConfig(projectRoot: string): RawMemoryConfig {
   return fileConfig;
 }
 
-/** Expand a leading `~` to the user's home directory and resolve to absolute. */
-export function expandRoot(root: string): string {
-  let r = root.trim();
+/**
+ * Expand a memory root to an absolute path.
+ *
+ * - `~` / `~/...` expand to the user's home directory.
+ * - Absolute paths are returned as-is (normalized).
+ * - Relative paths resolve against `baseDir` (the project root) when provided,
+ *   NOT `process.cwd()` — opencode runs with cwd set to the user's home, so a
+ *   relative `root` like `./_memory_data` in a project's memory.json must be
+ *   anchored to the project, otherwise it lands in the home directory.
+ */
+export function expandRoot(root: string, baseDir?: string): string {
+  const r = root.trim();
   if (r === "~" || r === "~/" || r === "~\\") {
     return homedir();
   }
   if (r.startsWith("~/") || r.startsWith("~\\")) {
-    r = resolve(homedir(), r.slice(2));
-    return r;
+    return resolve(homedir(), r.slice(2));
   }
-  return resolve(r);
+  if (isAbsolute(r)) {
+    return resolve(r);
+  }
+  return resolve(baseDir ?? process.cwd(), r);
 }
 
 function clampNumber(
@@ -106,10 +117,14 @@ function clampNumber(
 }
 
 /**
- * Merge raw config (from opencode.json `memory` block) with defaults and
- * normalize into a fully-resolved MemoryConfig.
+ * Merge raw config with defaults and normalize into a fully-resolved
+ * MemoryConfig. A relative `root` is resolved against `baseDir` (the project
+ * root); see expandRoot.
  */
-export function resolveConfig(raw: RawMemoryConfig | undefined): MemoryConfig {
+export function resolveConfig(
+  raw: RawMemoryConfig | undefined,
+  baseDir?: string,
+): MemoryConfig {
   const r = raw ?? {};
   const rootRaw =
     typeof r.root === "string" && r.root.trim().length > 0
@@ -118,7 +133,7 @@ export function resolveConfig(raw: RawMemoryConfig | undefined): MemoryConfig {
 
   return {
     enabled: r.enabled !== false,
-    root: expandRoot(rootRaw),
+    root: expandRoot(rootRaw, baseDir),
     search: {
       scoreFloor: clampNumber(r.search?.scoreFloor, 0.15, 0, 1),
       limit: Math.round(clampNumber(r.search?.limit, 10, 1, 100)),

@@ -94,7 +94,7 @@ export const MemoryPlugin: Plugin = async ({ client, project, directory, worktre
   // ("Unrecognized key: memory"), which breaks the whole session. The plugin
   // owns its own config file, which opencode never parses. See DESIGN.md §7.
   const rawMemory = loadRawConfig(projectRoot);
-  const config = resolveConfig(rawMemory);
+  const config = resolveConfig(rawMemory, projectRoot);
 
   const projectId = projectIdFromPath(projectRoot);
 
