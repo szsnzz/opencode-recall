@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+skill/lib/
 
 # npm pack artifact
 *.tgz

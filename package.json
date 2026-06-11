@@ -19,7 +19,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json",
-    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build:skill": "tsc -p tsconfig.skill.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true});require('node:fs').rmSync('skill/lib',{recursive:true,force:true})\"",
     "test": "node --experimental-strip-types --test \"test/*.test.ts\"",
     "prepare": "npm run build",
     "prepublishOnly": "npm run clean && npm run build"
